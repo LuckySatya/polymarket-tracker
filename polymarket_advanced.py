@@ -338,55 +338,98 @@ def check_curve():
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
-# ── SIGNAL 4: NO PRICE SPIKE ──────────────────────────────────────────────────
+# ── SIGNAL 4: NO PRICE FLOORS + DIVERGENCE ───────────────────────────────────
+# Progressive floor levels — alert each time NO crosses one going down
+FLOOR_LEVELS = [80, 75, 70, 65]
+
 def check_price():
     if not MARKETS:
         return
-    # Monitor Apr 7 and Apr 15 NO prices
-    targets = MARKETS[:2] if len(MARKETS) >= 2 else MARKETS
 
-    for label, date_str, yes_token, no_token in targets:
+    current_prices = {}  # label -> no price
+
+    # ── Per-market: floors + spike ────────────────────────────────────────────
+    for label, date_str, yes_token, no_token in MARKETS:
         no = get_price_no(no_token)
         if not no:
             continue
 
-        log(f"NO price {label}: {no}¢")
+        current_prices[label] = no
+        log(f"NO {label}: {no}¢  ({days_to(date_str)}d)")
         price_history.append((label, no, time.time()))
 
-        # Find previous reading for this label
+        # Previous reading for this label
         prev_entries = [(l, p, t) for l, p, t in price_history
                         if l == label and time.time() - t > 25]
         if not prev_entries:
             continue
-
         prev_no = prev_entries[-1][1]
         delta   = round(no - prev_no, 1)
 
+        # Spike alert
         if abs(delta) >= SPIKE_CENTS and can_alert(f"spike_{label}"):
             arrow = "📈" if delta > 0 else "📉"
-            signal = no_entry_signal(no)
             tg(
                 f"{arrow} <b>{label} NO spike: {'+' if delta > 0 else ''}{delta}¢</b>\n\n"
-                f"NO: <b>{no}¢</b>  (was {prev_no}¢)\n"
-                f"Days left: {days_to(date_str)}\n\n"
-                f"{signal}\n\n"
+                f"NO: <b>{no}¢</b>  (was {prev_no}¢)  |  {days_to(date_str)}d left\n\n"
+                f"{no_entry_signal(no)}\n\n"
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
-        # Threshold alerts
-        if no <= 80 and prev_no > 80 and can_alert(f"below80_{label}"):
+        # Progressive floor alerts — trigger each level as NO drops through it
+        for level in FLOOR_LEVELS:
+            if no <= level and prev_no > level and can_alert(f"floor{level}_{label}"):
+                remaining = [l for l in FLOOR_LEVELS if l < level]
+                next_level = f"  Next level to watch: {max(remaining)}¢" if remaining else ""
+                tg(
+                    f"🚨 <b>{label} NO broke {level}¢ → {no}¢</b>\n\n"
+                    f"Days left: {days_to(date_str)}\n"
+                    f"Market implying {100 - no:.0f}% ceasefire probability\n"
+                    f"{next_level}\n\n"
+                    f"👉 <a href='{MARKET_URL}'>Open market</a>"
+                )
+
+    # ── Divergence: spread between adjacent dates ──────────────────────────────
+    labels_in_order = [m[0] for m in MARKETS]
+    for i in range(1, len(labels_in_order)):
+        a = labels_in_order[i-1]
+        b = labels_in_order[i]
+        if a not in current_prices or b not in current_prices:
+            continue
+
+        spread = round(current_prices[a] - current_prices[b], 1)
+
+        # Get previous spread for these two
+        prev_a = [(l, p, t) for l, p, t in price_history if l == a and time.time() - t > 25]
+        prev_b = [(l, p, t) for l, p, t in price_history if l == b and time.time() - t > 25]
+        if not prev_a or not prev_b:
+            continue
+
+        prev_spread = round(prev_a[-1][1] - prev_b[-1][1], 1)
+        spread_delta = round(spread - prev_spread, 1)
+
+        log(f"Spread {a}↔{b}: {spread}¢  (was {prev_spread}¢  Δ{spread_delta:+.1f}¢)")
+
+        # Spread compression — dates converging (one is mispriced)
+        if spread <= 3 and prev_spread > 3 and can_alert(f"compress_{a}_{b}"):
             tg(
-                f"🔔 <b>{label} NO dropped below 80¢ → {no}¢</b>\n\n"
-                f"Market pricing ceasefire probability unusually high.\n"
-                f"Strong NO entry if you disagree.\n\n"
+                f"⚠️ <b>Spread compression: {a} ↔ {b}</b>\n\n"
+                f"{a} NO: <b>{current_prices[a]}¢</b>\n"
+                f"{b} NO: <b>{current_prices[b]}¢</b>\n"
+                f"Gap: <b>{spread}¢</b>  (was {prev_spread}¢)\n\n"
+                f"These dates are nearly identical — one is mispriced.\n\n"
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
-        if no >= 96 and prev_no < 96 and can_alert(f"above96_{label}"):
+        # Divergence — dates moving in opposite directions
+        da = round(current_prices[a] - prev_a[-1][1], 1)
+        db = round(current_prices[b] - prev_b[-1][1], 1)
+        if da * db < 0 and abs(da) >= 2 and abs(db) >= 2 and can_alert(f"diverge_{a}_{b}"):
             tg(
-                f"🔔 <b>{label} NO above 96¢ → {no}¢</b>\n\n"
-                f"Market near-certain no ceasefire. Limited NO upside.\n"
-                f"Consider YES as lottery ticket.\n\n"
+                f"📊 <b>Divergence: {a} ↔ {b}</b>\n\n"
+                f"{a} NO: <b>{current_prices[a]}¢</b>  ({'+' if da > 0 else ''}{da}¢)\n"
+                f"{b} NO: <b>{current_prices[b]}¢</b>  ({'+' if db > 0 else ''}{db}¢)\n\n"
+                f"Dates moving in opposite directions — mispricing window.\n\n"
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
