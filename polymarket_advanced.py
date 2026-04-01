@@ -73,56 +73,17 @@ def no_entry_signal(no_price):
 
 # ── MARKET DISCOVERY ──────────────────────────────────────────────────────────
 def discover_markets():
-    log("Discovering markets via Gamma API...")
+    log("Discovering markets via verified slugs...")
     found = []
 
-    # Method 1: event_slug
-    try:
-        r = requests.get(f"{GAMMA}/markets",
-                         params={"event_slug": EVENT_SLUG, "limit": 50}, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        markets_raw = data.get("markets", data.get("data", data)) if isinstance(data, dict) else data
-        log(f"Method 1: got {len(markets_raw)} markets")
-
-        # Log all questions so we can see exact text format
-        for i, m in enumerate(markets_raw[:20]):
-            q = m.get("question", "") or m.get("title", "")
-            slug = m.get("slug", "")
-            log(f"  [{i}] q='{q}' slug='{slug}'")
-
-        for m in markets_raw:
-            question = m.get("question", "") or m.get("title", "")
-            end_date = (m.get("endDate", "") or m.get("end_date_iso", ""))[:10]
-            tokens = m.get("clobTokenIds") or m.get("clob_token_ids") or []
-            if isinstance(tokens, str):
-                try: tokens = json.loads(tokens)
-                except: tokens = []
-            if len(tokens) < 2:
-                continue
-            yes_token = str(tokens[0])
-            no_token  = str(tokens[1])
-            for label in TARGET_DATES:
-                if label.lower() in question.lower():
-                    found.append((label, end_date, yes_token, no_token))
-                    log(f"  Found: {label} | YES=...{yes_token[-8:]} NO=...{no_token[-8:]}")
-                    break
-    except Exception as e:
-        log(f"Method 1 error: {e}")
-
-    if found:
-        found.sort(key=lambda x: x[1])
-        return found
-
-    # Method 2: individual slugs
-    log("Method 1 failed, trying individual slugs...")
     slugs = [
-        ("April 7",  "2026-04-07", "us-x-iran-ceasefire-by-april-7"),
+        ("April 7",  "2026-04-07", "us-x-iran-ceasefire-by-april-7-278"),
         ("April 15", "2026-04-15", "us-x-iran-ceasefire-by-april-15-182-528-637"),
-        ("April 30", "2026-04-30", "us-x-iran-ceasefire-by-april-30"),
-        ("May 31",   "2026-05-31", "us-x-iran-ceasefire-by-may-31"),
-        ("June 30",  "2026-06-30", "us-x-iran-ceasefire-by-june-30"),
+        ("April 30", "2026-04-30", "us-x-iran-ceasefire-by-april-30-194-679-389"),
+        ("May 31",   "2026-05-31", "us-x-iran-ceasefire-by-may-31-313-373-916"),
+        ("June 30",  "2026-06-30", "us-x-iran-ceasefire-by-june-30-752-741-257"),
     ]
+
     for label, date, slug in slugs:
         try:
             r = requests.get(f"{GAMMA}/markets", params={"slug": slug}, timeout=10)
@@ -136,7 +97,7 @@ def discover_markets():
                     except: tokens = []
                 if len(tokens) >= 2:
                     found.append((label, date, str(tokens[0]), str(tokens[1])))
-                    log(f"  Slug found: {label}")
+                    log(f"  Found: {label} | YES=...{str(tokens[0])[-8:]} NO=...{str(tokens[1])[-8:]}")
                     break
         except Exception as e:
             log(f"  Slug error {label}: {e}")
