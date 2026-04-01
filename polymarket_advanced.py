@@ -24,7 +24,7 @@ VELOCITY_SPIKE_MULT  = 3.0
 WHALE_SIZE_USDC      = 2000
 CURVE_DEVIATION_PCT  = 25
 SPIKE_CENTS          = 3     # tighter for NO (moves in smaller increments)
-SUMMARY_HOURS        = 6
+SUMMARY_HOURS        = 2
 COOLDOWN_SEC         = 300
 CLOB  = "https://clob.polymarket.com"
 GAMMA = "https://gamma-api.polymarket.com"
@@ -152,30 +152,18 @@ def send_prices(chat_id):
         return
 
     lines = []
-    prev_no = None
     for label, date_str, yes_token, no_token in MARKETS:
-        no  = get_price_no(no_token)
-        yes = round(100 - no, 1) if no else None
-        d   = days_to(date_str)
-
-        if no:
-            # Implied daily NO decay vs previous date
-            rate_str = ""
-            if prev_no and no < prev_no:
-                rate_str = f"  ↘ {round(prev_no - no, 1)}¢ cheaper"
-            lines.append(
-                f"  <b>{label}</b> ({d}d)  NO: <b>{no}¢</b>  YES: {yes}¢{rate_str}"
-            )
-            prev_no = no
-        else:
-            lines.append(f"  <b>{label}</b> ({d}d)  —")
+        no = get_price_no(no_token)
+        d  = days_to(date_str)
+        lines.append(
+            f"  {label}: <b>{no}¢</b> NO" if no else f"  {label}: —"
+        )
 
     tg(
         f"📊 <b>Live ceasefire NO prices</b>\n"
         f"<i>{datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>\n\n"
         + "\n".join(lines) +
-        f"\n\n<i>NO pays $1 if no ceasefire by that date</i>\n"
-        f"👉 <a href='{MARKET_URL}'>Open market</a>",
+        f"\n\n👉 <a href='{MARKET_URL}'>Open market</a>",
         chat_id
     )
 
@@ -462,16 +450,26 @@ async def summary_loop():
     while True:
         await asyncio.sleep(SUMMARY_HOURS * 3600)
         lines = []
+        prev_no = None
         for label, date_str, yes_token, no_token in MARKETS:
             no = get_price_no(no_token)
             d  = days_to(date_str)
-            lines.append(
-                f"  {label} ({d}d): <b>{no}¢</b> NO" if no else f"  {label}: —"
-            )
+            if no:
+                trend = ""
+                if prev_no:
+                    gap = round(prev_no - no, 1)
+                    trend = f"  (↘ {gap}¢ gap)" if gap > 0 else ""
+                lines.append(f"  {label} ({d}d): <b>{no}¢</b> NO{trend}")
+                prev_no = no
+            else:
+                lines.append(f"  {label}: —")
+
+        now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
         tg(
-            f"🕐 <b>{SUMMARY_HOURS}h Update — NO prices</b>\n\n"
+            f"🕐 <b>{SUMMARY_HOURS}h Update</b>  <i>{now_str}</i>\n\n"
             + "\n".join(lines) +
-            f"\n\n<i>Send /prices anytime for live snapshot</i>"
+            f"\n\n"
+            f"Send /prices for a fresh snapshot anytime 📊"
         )
 
 # ── STARTUP ───────────────────────────────────────────────────────────────────
