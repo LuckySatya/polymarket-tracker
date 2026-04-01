@@ -85,6 +85,12 @@ def discover_markets():
         markets_raw = data.get("markets", data.get("data", data)) if isinstance(data, dict) else data
         log(f"Method 1: got {len(markets_raw)} markets")
 
+        # Log all questions so we can see exact text format
+        for i, m in enumerate(markets_raw[:20]):
+            q = m.get("question", "") or m.get("title", "")
+            slug = m.get("slug", "")
+            log(f"  [{i}] q='{q}' slug='{slug}'")
+
         for m in markets_raw:
             question = m.get("question", "") or m.get("title", "")
             end_date = (m.get("endDate", "") or m.get("end_date_iso", ""))[:10]
