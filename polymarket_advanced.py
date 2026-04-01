@@ -442,14 +442,17 @@ async def main():
         tg("❌ <b>Could not discover markets.</b> Check Gamma API / slugs.")
         return
 
-    # Test NO prices
-    test_no = get_price_no(MARKETS[0][3])
-    price_status = f"<b>{MARKETS[0][0]}</b> NO: <b>{test_no}¢</b>" if test_no else "⚠️ Price API not responding yet"
+    # Test all NO prices
+    price_lines = []
+    for label, date_str, yes_token, no_token in MARKETS:
+        no = get_price_no(no_token)
+        price_lines.append(f"  {label}: <b>{no}¢</b> NO" if no else f"  {label}: —")
+    price_status = "\n".join(price_lines)
 
     tg(
         f"🚀 <b>Advanced Tracker v4 — NO focused</b>\n\n"
         f"<b>Markets:</b>\n"
-        + "\n".join(f"  • {l} ({d}d left)" for l, d, yt, nt in MARKETS) +
+        + "\n".join(f"  • {l} ({days_to(d)}d left)" for l, d, yt, nt in MARKETS) +
         f"\n\n{price_status}\n\n"
         f"<b>Signals:</b>\n"
         f"  🔥 Volume velocity\n"
