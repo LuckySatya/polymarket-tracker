@@ -21,9 +21,9 @@ TARGET_DATES = ["April 7", "April 15", "April 30", "May 31", "June 30"]
 MARKET_URL = "https://polymarket.com/event/us-x-iran-ceasefire-by/us-x-iran-ceasefire-by-april-15-182-528-637"
 
 VELOCITY_SPIKE_MULT  = 3.0
-WHALE_SIZE_USDC      = 25000   # ← raised from 2000 to filter noise
+WHALE_SIZE_USDC      = 2000
 CURVE_DEVIATION_PCT  = 25
-SPIKE_CENTS          = 3
+SPIKE_CENTS          = 3     # tighter for NO (moves in smaller increments)
 SUMMARY_HOURS        = 2
 COOLDOWN_SEC         = 300
 CLOB  = "https://clob.polymarket.com"
@@ -33,7 +33,7 @@ GAMMA = "https://gamma-api.polymarket.com"
 price_history     = deque(maxlen=60)
 last_alert_time   = {}
 baseline_velocity = None
-MARKETS           = []
+MARKETS           = []   # [(label, date_str, yes_token, no_token), ...]
 last_update_id    = 0
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -62,6 +62,7 @@ def days_to(date_str):
     return max(0, (target - datetime.now(timezone.utc)).days)
 
 def no_entry_signal(no_price):
+    """Assess NO entry quality based on price."""
     if no_price <= 80:
         return "🟢 Strong NO entry — unusually cheap, implied YES probability high"
     elif no_price <= 86:
@@ -106,6 +107,7 @@ def discover_markets():
 
 # ── API CALLS ─────────────────────────────────────────────────────────────────
 def get_no_price(no_token):
+    """Get NO price — buy side."""
     try:
         r = requests.get(f"{CLOB}/price",
                          params={"token_id": no_token, "side": "buy"}, timeout=8)
@@ -194,6 +196,7 @@ def check_velocity():
     global baseline_velocity
     if not MARKETS:
         return
+    # Use YES token for trade history (more liquid side)
     trades = get_recent_trades(MARKETS[1][2] if len(MARKETS) > 1 else MARKETS[0][2])
     if not trades:
         return
@@ -201,7 +204,7 @@ def check_velocity():
     now_ts = time.time()
     recent = sum(1 for t in trades
                  if now_ts - int(t.get("timestamp", 0)) / 1000 < 120)
-    tpm = recent / 2.0
+    tpm = recent / 2.0  # per minute over 2-min window
 
     if baseline_velocity is None:
         baseline_velocity = max(tpm, 0.1)
@@ -213,6 +216,7 @@ def check_velocity():
     log(f"Velocity: {tpm:.1f} t/min  base={baseline_velocity:.1f}  ratio={ratio:.1f}x")
 
     if ratio >= VELOCITY_SPIKE_MULT and can_alert("velocity"):
+        # Get Apr 15 NO price
         no = get_price_no(MARKETS[1][3] if len(MARKETS) > 1 else MARKETS[0][3])
         tg(
             f"🔥 <b>Volume velocity spike!</b>\n\n"
@@ -226,8 +230,9 @@ def check_velocity():
 def check_orderbook():
     if not MARKETS:
         return
+    # Watch Apr 15 NO token orderbook
     m = MARKETS[1] if len(MARKETS) > 1 else MARKETS[0]
-    book = get_orderbook(m[3])
+    book = get_orderbook(m[3])  # NO token
     if not book:
         return
 
@@ -239,13 +244,16 @@ def check_orderbook():
     best_bid   = round(float(bids[0]["price"]) * 100, 1)
     best_ask   = round(float(asks[0]["price"]) * 100, 1)
     spread     = round(best_ask - best_bid, 1)
-    top_bid_sz = float(bids[0].get("size", 0))
 
-    log(f"Book NO: bid={best_bid}¢ ask={best_ask}¢ spread={spread}¢ bid_sz=${top_bid_sz:.0f}")
+    # Only consider bids within 20¢ of ask — ignore junk orders at 1¢
+    market_bids = [b for b in bids if float(b["price"]) * 100 >= best_ask - 20]
+    top_bid_sz  = max((float(b.get("size", 0)) for b in market_bids), default=0)
 
-    # ── FIX: deduplicate by order size + price, not just signal type ──────────
-    whale_key = f"whale_bid_{int(top_bid_sz)}_{best_bid}"
-    if top_bid_sz >= WHALE_SIZE_USDC and can_alert(whale_key):
+    log(f"Book NO: bid={best_bid}¢ ask={best_ask}¢ spread={spread}¢ real_bid_sz=${top_bid_sz:.0f}")
+
+    # Only alert on real near-market whale bids with unique key to prevent repeat spam
+    whale_key = f"whale_{int(top_bid_sz)}_{best_bid}"
+    if top_bid_sz >= WHALE_SIZE_USDC and best_bid >= 50 and can_alert(whale_key):
         tg(
             f"🐋 <b>Whale NO bid — large accumulation</b>\n\n"
             f"${top_bid_sz:,.0f} NO buy order at {best_bid}¢\n"
@@ -272,6 +280,8 @@ def check_curve():
 
     anomalies = []
 
+    # NO prices should DECREASE as date gets further out
+    # (further date = more chance of ceasefire = cheaper NO)
     for i in range(1, len(data)):
         if data[i][1] > data[i-1][1]:
             anomalies.append(
@@ -279,11 +289,12 @@ def check_curve():
                 f"{data[i-1][0]} NO ({data[i-1][1]}¢) — one is mispriced"
             )
 
+    # Check rate consistency between intervals
     rates = []
     for i in range(1, len(data)):
         gap = data[i][2] - data[i-1][2]
         if gap > 0:
-            drop = data[i-1][1] - data[i][1]
+            drop = data[i-1][1] - data[i][1]   # NO should drop as dates extend
             rates.append((data[i-1][0], data[i][0], drop / gap))
 
     for i in range(1, len(rates)):
@@ -296,8 +307,10 @@ def check_curve():
                     f"{rates[i][0]}→{rates[i][1]} {rates[i][2]:.1f}¢/day"
                 )
 
+    # Apr 15 vs curve extrapolation from Apr 30
     if len(data) >= 2 and data[1][2] > 0:
         ratio_days = data[0][2] / data[1][2]
+        # NO for Apr15 should be higher than Apr30 (less time = less chance of ceasefire)
         extrapolated = round(data[1][1] + (data[1][1] * (1 - ratio_days) * 0.5), 1)
         dev_pct = abs(data[0][1] - extrapolated) / max(extrapolated, 1) * 100
         log(f"Curve: Apr15 NO actual={data[0][1]}¢ implied={extrapolated}¢ dev={dev_pct:.0f}%")
@@ -319,14 +332,16 @@ def check_curve():
             )
 
 # ── SIGNAL 4: NO PRICE FLOORS + DIVERGENCE ───────────────────────────────────
+# Progressive floor levels — alert each time NO crosses one going down
 FLOOR_LEVELS = [80, 75, 70, 65]
 
 def check_price():
     if not MARKETS:
         return
 
-    current_prices = {}
+    current_prices = {}  # label -> no price
 
+    # ── Per-market: floors + spike ────────────────────────────────────────────
     for label, date_str, yes_token, no_token in MARKETS:
         no = get_price_no(no_token)
         if not no:
@@ -336,6 +351,7 @@ def check_price():
         log(f"NO {label}: {no}¢  ({days_to(date_str)}d)")
         price_history.append((label, no, time.time()))
 
+        # Previous reading for this label
         prev_entries = [(l, p, t) for l, p, t in price_history
                         if l == label and time.time() - t > 25]
         if not prev_entries:
@@ -343,6 +359,7 @@ def check_price():
         prev_no = prev_entries[-1][1]
         delta   = round(no - prev_no, 1)
 
+        # Spike alert
         if abs(delta) >= SPIKE_CENTS and can_alert(f"spike_{label}"):
             arrow = "📈" if delta > 0 else "📉"
             tg(
@@ -352,6 +369,7 @@ def check_price():
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
+        # Progressive floor alerts — trigger each level as NO drops through it
         for level in FLOOR_LEVELS:
             if no <= level and prev_no > level and can_alert(f"floor{level}_{label}"):
                 remaining = [l for l in FLOOR_LEVELS if l < level]
@@ -364,6 +382,7 @@ def check_price():
                     f"👉 <a href='{MARKET_URL}'>Open market</a>"
                 )
 
+    # ── Divergence: spread between adjacent dates ──────────────────────────────
     labels_in_order = [m[0] for m in MARKETS]
     for i in range(1, len(labels_in_order)):
         a = labels_in_order[i-1]
@@ -373,6 +392,7 @@ def check_price():
 
         spread = round(current_prices[a] - current_prices[b], 1)
 
+        # Get previous spread for these two
         prev_a = [(l, p, t) for l, p, t in price_history if l == a and time.time() - t > 25]
         prev_b = [(l, p, t) for l, p, t in price_history if l == b and time.time() - t > 25]
         if not prev_a or not prev_b:
@@ -383,6 +403,7 @@ def check_price():
 
         log(f"Spread {a}↔{b}: {spread}¢  (was {prev_spread}¢  Δ{spread_delta:+.1f}¢)")
 
+        # Spread compression — dates converging (one is mispriced)
         if spread <= 3 and prev_spread > 3 and can_alert(f"compress_{a}_{b}"):
             tg(
                 f"⚠️ <b>Spread compression: {a} ↔ {b}</b>\n\n"
@@ -393,6 +414,7 @@ def check_price():
                 f"👉 <a href='{MARKET_URL}'>Open market</a>"
             )
 
+        # Divergence — dates moving in opposite directions
         da = round(current_prices[a] - prev_a[-1][1], 1)
         db = round(current_prices[b] - prev_b[-1][1], 1)
         if da * db < 0 and abs(da) >= 2 and abs(db) >= 2 and can_alert(f"diverge_{a}_{b}"):
@@ -466,6 +488,7 @@ async def main():
         tg("❌ <b>Could not discover markets.</b> Check Gamma API / slugs.")
         return
 
+    # Test all NO prices
     price_lines = []
     for label, date_str, yes_token, no_token in MARKETS:
         no = get_price_no(no_token)
